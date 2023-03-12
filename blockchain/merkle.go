@@ -40,8 +40,8 @@ func NewMerkleTree(data [][]byte) *MerkleTree {
 	var nodes []MerkleNode
 
 	//将所有交易构造成MerkleTree Node
-	for _, dat := range data {
-		node := NewMerkleNode(nil, nil, dat)
+	for _, tx := range data {
+		node := NewMerkleNode(nil, nil, tx)
 		nodes = append(nodes, *node)
 	}
 

@@ -37,8 +37,9 @@ func (pow *ProofOfWork) InitData(nonce int) []byte {
 	// 将区块头中的数据连接在一起
 	data := bytes.Join(
 		[][]byte{
-			pow.Block.PrevBlockHash, //上一个区块的哈希值
-			pow.Block.MerkleRoot,    //默克尔树根
+			pow.Block.PrevBlockHash,    //上一个区块的哈希值
+			pow.Block.MerkleRoot,       //默克尔树根
+			ToHex(pow.Block.Timestamp), //区块时间戳
 			ToHex(int64(nonce)),
 			ToHex(int64(Difficulty)),
 		},
