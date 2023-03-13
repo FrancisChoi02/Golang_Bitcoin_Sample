@@ -5,6 +5,7 @@ import (
 	"Golang_Bitcoin_Sample/wallet"
 	"flag"
 	"fmt"
+	"go.uber.org/zap"
 	"log"
 	"os"
 	"runtime"
@@ -56,14 +57,17 @@ func (cli *CommandLine) listAddresses(nodeID string) {
 
 // createBlockChain 在当前的节点下创建区块链对象，并获得创世区块奖励
 func (cli *CommandLine) createBlockChain(address, nodeID string) {
-	//验证钱包有效性
+	// 验证钱包有效性
 	if !wallet.ValidateAddress(address) {
 		log.Panic("Address is not Valid")
 	}
+	// 初始化区块链对象，并获得创世区块的区块收益
 	chain := blockchain.InitBlockChain(address, nodeID)
 	defer chain.Database.Close()
 
-	//UTXO集合操作
+	// 更新数据库中的UTXO集合
+	UTXOSet := blockchain.UTXOSet{chain}
+	UTXOSet.Reindex()
 
 	fmt.Println("Finished!")
 }
@@ -96,6 +100,80 @@ func (cli *CommandLine) printChain(nodeID string) {
 	}
 }
 
+func (cli *CommandLine) send(from, to string, amount int, nodeID string, mineNow bool) {
+	//判断参与转账的地址的有效性
+	if !wallet.ValidateAddress(to) {
+		zap.L().Error("To-Address is not Valid")
+		return
+	}
+	if !wallet.ValidateAddress(from) {
+		zap.L().Error("From-Address is not Valid")
+		return
+	}
+
+	// 获取区块链对象、UTXO集对象
+	chain := blockchain.ContinueBlockChain(nodeID)
+	UTXOSet := blockchain.UTXOSet{chain}
+	defer chain.Database.Close()
+
+	// 从钱包文件中获取钱包集合，并通过地址获取具体钱包对象
+	wallets, err := wallet.CreateWallets(nodeID)
+	if err != nil {
+		zap.L().Error("wallet.CreateWallets()", zap.Error(err))
+		return
+	}
+	wallet := wallets.GetWallet(from)
+
+	// 创建交易对象
+	tx := blockchain.NewTransaction(&wallet, to, amount, &UTXOSet)
+
+	// 根据mineNow标记判断交易的处理方法
+	if mineNow {
+		// 将所有交易打包到候选区块中，开始挖矿
+		cbTx := blockchain.CoinbaseTx(from, "")
+		txs := []*blockchain.Transaction{cbTx, tx}
+		block := chain.MineBlock(txs)
+
+		//更新UTXO集合
+		UTXOSet.Update(block)
+	} else {
+		//广播交易
+		fmt.Println("send tx")
+	}
+
+	fmt.Println("Success!")
+}
+
+func (cli *CommandLine) getBalance(address, nodeID string) {
+	if !wallet.ValidateAddress(address) {
+		log.Panic("Address is not Valid")
+	}
+	chain := blockchain.ContinueBlockChain(nodeID)
+	UTXOSet := blockchain.UTXOSet{chain}
+	defer chain.Database.Close()
+
+	balance := 0
+	pubKeyHash := wallet.Base58Decode([]byte(address))
+	pubKeyHash = pubKeyHash[1 : len(pubKeyHash)-4]
+	UTXOs := UTXOSet.FindAddressBalance(pubKeyHash)
+
+	for _, out := range UTXOs {
+		balance += out.Value
+	}
+
+	fmt.Printf("Balance of %s: %d\n", address, balance)
+}
+
+func (cli *CommandLine) reindexUTXO(nodeID string) {
+	chain := blockchain.ContinueBlockChain(nodeID)
+	defer chain.Database.Close()
+	UTXOSet := blockchain.UTXOSet{chain}
+	UTXOSet.Reindex()
+
+	count := UTXOSet.CountTransactions()
+	fmt.Printf("Done! There are %d transactions in the UTXO set.\n", count)
+}
+
 // Run 客户端运行客户端
 func (client *CommandLine) Run() {
 	client.validateArgs()
@@ -107,11 +185,22 @@ func (client *CommandLine) Run() {
 		runtime.Goexit()
 	}
 
-	//获取调用的具体方法
+	// 获取调用的具体方法
 	createWalletCmd := flag.NewFlagSet("createwallet", flag.ExitOnError)
 	createBlockchainCmd := flag.NewFlagSet("createblockchain", flag.ExitOnError)
 	listAddressesCmd := flag.NewFlagSet("listaddresses", flag.ExitOnError)
 	printChainCmd := flag.NewFlagSet("printchain", flag.ExitOnError)
+	sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
+	getBalanceCmd := flag.NewFlagSet("getbalance", flag.ExitOnError)
+	reindexUTXOCmd := flag.NewFlagSet("reindexutxo", flag.ExitOnError)
+
+	// 命令行参数解析与获取
+	getBalanceAddress := getBalanceCmd.String("address", "", "The address to get balance for")
+	createBlockchainAddress := createBlockchainCmd.String("address", "", "The address to send genesis block reward to")
+	sendFrom := sendCmd.String("from", "", "Source wallet address")
+	sendTo := sendCmd.String("to", "", "Destination wallet address")
+	sendAmount := sendCmd.Int("amount", 0, "Amount to send")
+	sendMine := sendCmd.Bool("mine", false, "Mine immediately on the same node")
 
 	// 判断调用的方法类型
 	switch os.Args[1] {
@@ -135,14 +224,63 @@ func (client *CommandLine) Run() {
 		if err != nil {
 			log.Panic(err)
 		}
-
+	case "send":
+		err := sendCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Panic(err)
+		}
+	case "reindexutxo":
+		err := reindexUTXOCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Panic(err)
+		}
+	case "getbalance":
+		err := getBalanceCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Panic(err)
+		}
 	default:
 		fmt.Println("方法调用错误")
 		runtime.Goexit()
 	}
 
+	if getBalanceCmd.Parsed() {
+		if *getBalanceAddress == "" {
+			getBalanceCmd.Usage()
+			runtime.Goexit()
+		}
+		client.getBalance(*getBalanceAddress, nodeID)
+	}
+
+	if createBlockchainCmd.Parsed() {
+		if *createBlockchainAddress == "" {
+			createBlockchainCmd.Usage()
+			runtime.Goexit()
+		}
+		client.createBlockChain(*createBlockchainAddress, nodeID)
+	}
+
+	if printChainCmd.Parsed() {
+		client.printChain(nodeID)
+	}
+
 	if createWalletCmd.Parsed() {
 		client.createWallet(nodeID)
+	}
+	if listAddressesCmd.Parsed() {
+		client.listAddresses(nodeID)
+	}
+	if reindexUTXOCmd.Parsed() {
+		client.reindexUTXO(nodeID)
+	}
+
+	if sendCmd.Parsed() {
+		if *sendFrom == "" || *sendTo == "" || *sendAmount <= 0 {
+			sendCmd.Usage()
+			runtime.Goexit()
+		}
+
+		client.send(*sendFrom, *sendTo, *sendAmount, nodeID, *sendMine)
 	}
 
 }

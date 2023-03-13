@@ -1,6 +1,10 @@
 package blockchain
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/dgraph-io/badger"
 	"go.uber.org/zap"
@@ -92,6 +96,51 @@ func ContinueBlockChain(nodeId string) *BlockChain {
 	return &chain
 }
 
+// MineBlock 构造候选区块
+func (chain *BlockChain) MineBlock(transactions []*Transaction) *Block {
+	var lastHash []byte
+	var lastHeight int
+
+	for _, tx := range transactions {
+		if chain.VerifyTransaction(tx) != true {
+			log.Panic("Invalid Transaction")
+		}
+	}
+
+	err := chain.Database.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("lh"))
+		zap.L().Error("txn.Get() failed", zap.Error(err))
+		lastHash, err = item.Value()
+
+		item, err = txn.Get(lastHash)
+		zap.L().Error("txn.Get() failed", zap.Error(err))
+		lastBlockData, _ := item.Value()
+
+		lastBlock := Deserialize(lastBlockData)
+
+		lastHeight = lastBlock.Height
+
+		return err
+	})
+	zap.L().Error("chain.Database.View() failed", zap.Error(err))
+
+	newBlock := CreateBlock(transactions, lastHash, lastHeight+1)
+
+	err = chain.Database.Update(func(txn *badger.Txn) error {
+		err := txn.Set(newBlock.Hash, newBlock.Serialize())
+		zap.L().Error("txn.Set() failed", zap.Error(err))
+
+		err = txn.Set([]byte("lh"), newBlock.Hash)
+
+		chain.LastHash = newBlock.Hash
+
+		return err
+	})
+	zap.L().Error("chain.Database.Update() failed", zap.Error(err))
+
+	return newBlock
+}
+
 // InitBlockChain 创建区块链对象
 func InitBlockChain(address, nodeId string) *BlockChain {
 	//查看当前节点对应的数据库是否存在
@@ -131,4 +180,111 @@ func InitBlockChain(address, nodeId string) *BlockChain {
 
 	blockchain := BlockChain{lastHash, db}
 	return &blockchain
+}
+
+// FindTransaction 根据Id查询交易对象
+func (bc *BlockChain) FindTransaction(ID []byte) (Transaction, error) {
+	// 区块迭代器初始化
+	iter := bc.Iterator()
+
+	for {
+		block := iter.Next()
+
+		for _, tx := range block.Transactions {
+			if bytes.Compare(tx.ID, ID) == 0 {
+				return *tx, nil
+			}
+		}
+
+		// 如果到创世区块都还没找到交易，则退出循环、报错
+		if len(block.PrevBlockHash) == 0 {
+			break
+		}
+	}
+
+	return Transaction{}, errors.New("Transaction does not exist")
+}
+
+// SignTransaction 签署交易
+func (bc *BlockChain) SignTransaction(tx *Transaction, privKey ecdsa.PrivateKey) {
+	prevTXs := make(map[string]Transaction)
+
+	for _, in := range tx.Inputs {
+		// 寻找交易是否存在，并获取交易对象
+		prevTX, err := bc.FindTransaction(in.ID)
+		zap.L().Error("bc.FindTransaction failed()", zap.Error(err))
+
+		// 将交易ID与交易对象的索引关系通过map保存
+		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
+	}
+
+	tx.Sign(privKey, prevTXs)
+}
+
+// VerifyTransaction 验证交易合法性
+func (bc *BlockChain) VerifyTransaction(tx *Transaction) bool {
+	if tx.IsCoinbaseTx() {
+		return true
+	}
+	prevTXs := make(map[string]Transaction)
+
+	for _, in := range tx.Inputs {
+		prevTX, err := bc.FindTransaction(in.ID)
+		zap.L().Error("bc.FindTransaction failed()", zap.Error(err))
+
+		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
+	}
+
+	return tx.Verify(prevTXs)
+}
+
+// FindUTXO 查找UTXO
+func (chain *BlockChain) FindUTXO() map[string]TxOutputs {
+	UTXO := make(map[string]TxOutputs)
+	spentTXOs := make(map[string][]int)
+
+	//初始化区块链迭代器
+	iter := chain.Iterator()
+
+	for {
+		block := iter.Next()
+
+		for _, tx := range block.Transactions {
+			txID := hex.EncodeToString(tx.ID)
+
+			//查找有哪些输出结构的交易，没有被输入结构引用
+		Outputs:
+			for outIdx, out := range tx.Outputs {
+				// 查找本交易是否在输入结构索引中
+				if spentTXOs[txID] != nil {
+					for _, spentOut := range spentTXOs[txID] {
+						if spentOut == outIdx {
+							continue Outputs
+						}
+					}
+				}
+
+				//如果输出结构中的交易没有被使用过，则添加到UTXO集合中
+				//UTXO也是交易ID 和 未使用Output的关系映射
+				outs := UTXO[txID]
+				outs.Outputs = append(outs.Outputs, out)
+				UTXO[txID] = outs
+			}
+
+			// 当交易类型并非币基交易时，标记输入结构中使用过的UTXO
+			if tx.IsCoinbaseTx() == false {
+				for _, in := range tx.Inputs {
+					inTxID := hex.EncodeToString(in.ID)
+					// 标记使用过的交易对应的输出索引
+					spentTXOs[inTxID] = append(spentTXOs[inTxID], in.Out)
+				}
+			}
+		}
+
+		//遍历到创世区块后，跳出循环
+		if len(block.PrevBlockHash) == 0 {
+			break
+		}
+	}
+	return UTXO
 }
