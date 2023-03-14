@@ -1,8 +1,10 @@
 package blockchain
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"go.uber.org/zap"
+	"sort"
 )
 
 type MerkleTree struct {
@@ -38,6 +40,11 @@ func NewMerkleNode(left, right *MerkleNode, data []byte) *MerkleNode {
 // NewMerkleTree 构建MerkleTree 获得merkleRoot
 func NewMerkleTree(data [][]byte) *MerkleTree {
 	var nodes []MerkleNode
+
+	// 将所有交易从大到小排序，保证MerkleTree生成稳定
+	sort.Slice(data, func(i, j int) bool {
+		return bytes.Compare(data[i], data[j]) < 0
+	})
 
 	//将所有交易构造成MerkleTree Node
 	for _, tx := range data {
