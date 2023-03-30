@@ -230,7 +230,7 @@ func (bc *BlockChain) VerifyTransaction(tx *Transaction) bool {
 
 	for _, in := range tx.Inputs {
 		prevTX, err := bc.FindTransaction(in.ID)
-		zap.L().Error("bc.FindTransaction failed()", zap.Error(err))
+		zap.L().Error("bc.FindTransaction() failed", zap.Error(err))
 
 		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
 	}
@@ -287,4 +287,98 @@ func (chain *BlockChain) FindUTXO() map[string]TxOutputs {
 		}
 	}
 	return UTXO
+}
+
+// GetBestHeight 获取区块当前最高的区块高度
+func (chain *BlockChain) GetBestHeight() int {
+	var lastBlock Block
+
+	err := chain.Database.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte("lh"))
+		zap.L().Error("txn.Get() failed", zap.Error(err))
+		lastHash, _ := item.Value()
+
+		item, err = txn.Get(lastHash)
+		zap.L().Error("txn.Get() failed", zap.Error(err))
+		lastBlockData, _ := item.Value()
+
+		lastBlock = *Deserialize(lastBlockData)
+
+		return nil
+	})
+	zap.L().Error("chain.Database.View() failed", zap.Error(err))
+
+	return lastBlock.Height
+}
+
+// AddBlock 向本地区块链中添加区块
+func (chain *BlockChain) AddBlock(block *Block) {
+	err := chain.Database.Update(func(txn *badger.Txn) error {
+		if _, err := txn.Get(block.Hash); err == nil {
+			return nil
+		}
+
+		blockData := block.Serialize()
+		err := txn.Set(block.Hash, blockData)
+		zap.L().Error("txn.Set() failed", zap.Error(err))
+
+		item, err := txn.Get([]byte("lh"))
+		zap.L().Error("txn.Get() failed", zap.Error(err))
+		lastHash, _ := item.Value()
+
+		item, err = txn.Get(lastHash)
+		zap.L().Error("txn.Get() failed", zap.Error(err))
+		lastBlockData, _ := item.Value()
+
+		lastBlock := Deserialize(lastBlockData)
+
+		if block.Height > lastBlock.Height {
+			err = txn.Set([]byte("lh"), block.Hash)
+			zap.L().Error("txn.Set() failed", zap.Error(err))
+			chain.LastHash = block.Hash
+		}
+
+		return nil
+	})
+	zap.L().Error("chain.Database.Update() failed", zap.Error(err))
+}
+
+// GetBlock 从数据库中获取指定哈希值的区块
+func (chain *BlockChain) GetBlock(blockHash []byte) (Block, error) {
+	var block Block
+
+	err := chain.Database.View(func(txn *badger.Txn) error {
+		if item, err := txn.Get(blockHash); err != nil {
+			return errors.New("Block is not found")
+		} else {
+			blockData, _ := item.Value()
+
+			block = *Deserialize(blockData)
+		}
+		return nil
+	})
+	if err != nil {
+		return block, err
+	}
+
+	return block, nil
+}
+
+// GetBlockHashes 获取当前区块链中所有区块的哈希值列表
+func (chain *BlockChain) GetBlockHashes() [][]byte {
+	var blocks [][]byte
+
+	iter := chain.Iterator()
+
+	for {
+		block := iter.Next()
+
+		blocks = append(blocks, block.Hash)
+
+		if len(block.PrevBlockHash) == 0 {
+			break
+		}
+	}
+
+	return blocks
 }

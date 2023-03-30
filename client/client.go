@@ -2,6 +2,7 @@ package client
 
 import (
 	"Golang_Bitcoin_Sample/blockchain"
+	"Golang_Bitcoin_Sample/network"
 	"Golang_Bitcoin_Sample/wallet"
 	"flag"
 	"fmt"
@@ -100,6 +101,7 @@ func (cli *CommandLine) printChain(nodeID string) {
 	}
 }
 
+// send 转账交易
 func (cli *CommandLine) send(from, to string, amount int, nodeID string, mineNow bool) {
 	//判断参与转账的地址的有效性
 	if !wallet.ValidateAddress(to) {
@@ -144,6 +146,7 @@ func (cli *CommandLine) send(from, to string, amount int, nodeID string, mineNow
 	fmt.Println("Success!")
 }
 
+// getBalance 获取当前地址还有多少UTXO
 func (cli *CommandLine) getBalance(address, nodeID string) {
 	if !wallet.ValidateAddress(address) {
 		log.Panic("Address is not Valid")
@@ -164,6 +167,7 @@ func (cli *CommandLine) getBalance(address, nodeID string) {
 	fmt.Printf("Balance of %s: %d\n", address, balance)
 }
 
+// reindexUTXO 更新本地的UTXO集合
 func (cli *CommandLine) reindexUTXO(nodeID string) {
 	chain := blockchain.ContinueBlockChain(nodeID)
 	defer chain.Database.Close()
@@ -171,7 +175,22 @@ func (cli *CommandLine) reindexUTXO(nodeID string) {
 	UTXOSet.Reindex()
 
 	count := UTXOSet.CountTransactions()
-	fmt.Printf("Done! There are %d transactions in the UTXO set.\n", count)
+	fmt.Printf("UTXO 集合中有 %d 笔交易.\n", count)
+}
+
+// StartNode 开启节点通信功能
+func (cli *CommandLine) StartNode(nodeID, minerAddress string) {
+	fmt.Printf("Starting Node %s\n", nodeID)
+
+	//判断钱包是否合法
+	if len(minerAddress) > 0 {
+		if wallet.ValidateAddress(minerAddress) {
+			fmt.Println("接收出块奖励的地址为: ", minerAddress)
+		} else {
+			log.Panic("地址格式不合法")
+		}
+	}
+	network.StartServer(nodeID, minerAddress)
 }
 
 // Run 客户端运行客户端
@@ -193,6 +212,7 @@ func (client *CommandLine) Run() {
 	sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
 	getBalanceCmd := flag.NewFlagSet("getbalance", flag.ExitOnError)
 	reindexUTXOCmd := flag.NewFlagSet("reindexutxo", flag.ExitOnError)
+	startNodeCmd := flag.NewFlagSet("startnode", flag.ExitOnError)
 
 	// 命令行参数解析与获取
 	getBalanceAddress := getBalanceCmd.String("address", "", "The address to get balance for")
@@ -201,6 +221,7 @@ func (client *CommandLine) Run() {
 	sendTo := sendCmd.String("to", "", "Destination wallet address")
 	sendAmount := sendCmd.Int("amount", 0, "Amount to send")
 	sendMine := sendCmd.Bool("mine", false, "Mine immediately on the same node")
+	startNodeMiner := startNodeCmd.String("miner", "", "Enable mining mode and send reward to ADDRESS")
 
 	// 判断调用的方法类型
 	switch os.Args[1] {
@@ -281,6 +302,15 @@ func (client *CommandLine) Run() {
 		}
 
 		client.send(*sendFrom, *sendTo, *sendAmount, nodeID, *sendMine)
+	}
+
+	if startNodeCmd.Parsed() {
+		nodeID := os.Getenv("NODE_ID")
+		if nodeID == "" {
+			startNodeCmd.Usage()
+			runtime.Goexit()
+		}
+		client.StartNode(nodeID, *startNodeMiner)
 	}
 
 }

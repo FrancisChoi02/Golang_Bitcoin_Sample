@@ -6,6 +6,7 @@ require (
 	github.com/dgraph-io/badger v1.5.4
 	github.com/mr-tron/base58 v1.2.0
 	github.com/natefinch/lumberjack v2.0.0+incompatible
+	github.com/vrecan/death/v3 v3.0.3
 	go.uber.org/zap v1.24.0
 	golang.org/x/crypto v0.6.0
 )
