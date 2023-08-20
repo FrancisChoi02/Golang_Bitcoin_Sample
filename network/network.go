@@ -483,7 +483,6 @@ func StartServer(nodeID, minerAddress string) {
 
 		//要求获取接入节点的地址列表
 		//SendAddr
-
 	}
 
 	//接受来自其他节点的连接请求，并在建立连接后处理该连接请求
@@ -497,6 +496,7 @@ func StartServer(nodeID, minerAddress string) {
 	}
 }
 
+// GobEncode 将数据编码为字节切片
 func GobEncode(data interface{}) []byte {
 	var buff bytes.Buffer
 

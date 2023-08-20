@@ -210,7 +210,7 @@ func (bc *BlockChain) SignTransaction(tx *Transaction, privKey ecdsa.PrivateKey)
 	prevTXs := make(map[string]Transaction)
 
 	for _, in := range tx.Inputs {
-		// 寻找交易是否存在，并获取交易对象
+		// 寻找交易是否存在，并获 取交易对象
 		prevTX, err := bc.FindTransaction(in.ID)
 		zap.L().Error("bc.FindTransaction failed()", zap.Error(err))
 
